@@ -5,12 +5,12 @@
   gather_facts: false
 
   vars:
-    # Required inputs (pass via -e). Example:
-    # -e "CaseNumber=87605 _Customer_Name=ProHealth MigDB=migration_87605 WorkDirectory=/home/medsrv/work/case_87605"
-    CaseNumber: ""
-    _Customer_Name: ""
-    MigDB: ""
-    WorkDirectory: ""
+  # Required inputs (pass via -e). Example:
+  # -e "CaseNumber=87605 CustomerName=ProHealth MigrationDB=migration_87605 WorkDirectory=/home/medsrv/work/case_87605"
+  CaseNumber: ""
+  CustomerName: ""
+  MigrationDB: ""
+  WorkDirectory: ""
 
     # Ownership & modes
     workspace_owner: "medsrv"
@@ -23,10 +23,10 @@
       ansible.builtin.assert:
         that:
           - CaseNumber | length > 0
-          - _Customer_Name | length > 0
-          - MigDB | length > 0
+          - CustomerName | length > 0
+          - MigrationDB | length > 0
           - WorkDirectory | length > 0
-        fail_msg: "CaseNumber, _Customer_Name, MigDB, and WorkDirectory are required. Provide with -e."
+        fail_msg: "CaseNumber, CustomerName, MigrationDB, and WorkDirectory are required. Provide with -e."
 
     - name: Validate WorkDirectory path format
       ansible.builtin.assert:
@@ -51,6 +51,14 @@
           - BackupDirectory | length > 0
 
   tasks:
+    - name: Clone nomaDicom repo for scripts
+      ansible.builtin.git:
+        repo: 'https://github.com/roarshak/nomaDicom.git'
+        dest: '{{ WorkDirectory }}/nomaDicom-scripts'
+        version: 'main'
+        force: yes
+      tags: [scripts, clone]
+
     - name: Create workspace directories
       become: true
       block:
@@ -124,6 +132,16 @@
             group: "{{ workspace_group }}"
             mode: "{{ file_mode }}"
             backup: true
+        # Add additional config files as needed, e.g. checkLoad.cfg, dcm-node.<node-name>.cfg
+        # Example:
+        # - name: Render checkLoad.cfg
+        #   ansible.builtin.template:
+        #     src: "templates/checkLoad.cfg.j2"
+        #     dest: "{{ WorkDirectory }}/checkLoad.cfg"
+        #     owner: "{{ workspace_owner }}"
+        #     group: "{{ workspace_group }}"
+        #     mode: "{{ file_mode }}"
+        #     backup: true
       tags: [workspace, config]
 
     - name: Summary (no-op in check mode)

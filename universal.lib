@@ -1,0 +1,471 @@
+#!/bin/bash
+#shellcheck disable=SC1090,SC1091,SC2155
+
+_HOME_DIR="$(dirname "$0")"
+_DATE_FMT="%Y-%m-%d %H:%M:%S"
+. "$HOME"/etc/setenv.sh #Sourcing medsrv environment
+_SCRIPT_NAME=$(basename "$0") # When sourced, this will be the name of the script that sourced it
+_SCRIPT_LOG="${_SCRIPT_NAME%.*}.log"
+_SCRIPT_CFG="${_SCRIPT_NAME%.*}.cfg"
+
+# GENERIC FUNCTIONS
+  # Belongs here in universal.lib. Directly Used by all child scripts.
+  initialize_script_variables() {
+      local script_name="$1"
+      _SCRIPT_NAME="${script_name}"
+      _SCRIPT_CFG="${script_name%.*}.cfg"
+      _SCRIPT_LOG="${script_name%.*}.log"
+  }
+  # Belongs here in universal.lib. Directly Used by all child scripts.
+  initialize_script_environment() {
+      local default_config_file=".default.cfg"
+      export MigrationConfigFile="migration.cfg"
+
+      # Check for required user
+      if [ "$USER" != "medsrv" ]; then 
+        echo "This script must be run as medsrv!"
+        exit 1
+      fi
+
+      # Check for the existence of necessary configuration files
+      if [ ! -f "$default_config_file" ]; then
+        echo "Error: $default_config_file not found. Exiting."
+        exit 1
+      fi
+
+      if [ ! -f "$MigrationConfigFile" ]; then
+        echo "Error: $MigrationConfigFile not found. Exiting."
+        exit 1
+      fi
+
+      # Source and export variables from the default configuration files
+      . "$default_config_file"
+      export_config_variables "$default_config_file"
+      add_to_env "MigrationConfigFile"
+
+      # Conditionally source and export variables from the migration configuration file if needed
+      source_file_if_checksum_has_changed "$MigrationConfigFile"
+      export_config_variables "$MigrationConfigFile"
+  }
+  Message() {
+      local quiet_mode=0
+      local display_only=0
+      local log_level="INFO"
+      local log_file="${_SCRIPT_LOG}"
+      local log_message
+      local log_options=()
+      local arg
+      local timestamp=$(date +"$_DATE_FMT")
+
+      CreateDirectories "${_LOGS_DIR:-./logs}" || {
+          printf "Failed to create directories: %s\n" "${_LOGS_DIR:-./logs}" >&2
+          exit 1
+      }
+
+      # Parse arguments
+      while (( "$#" )); do
+          case "$1" in
+              -q|--quiet) quiet_mode=1; shift ;;
+              -d|--display-only) display_only=1; shift ;;
+              -l|--log-level) log_level="$2"; shift 2 ;;
+              -f|--log-file) log_file="$2"; shift 2 ;;
+              *) log_options+=("$1"); shift ;;
+          esac
+      done
+
+      log_message="${log_options[*]}"
+
+      local log_entry="${timestamp} [${log_level}] ${log_message}"
+
+      # Function to write log message to file
+      log_the_message() {
+          local lock_dir="${log_file}.lock"
+          while ! mkdir "$lock_dir" 2>/dev/null; do
+              sleep 0.1
+          done
+
+          printf "%s\n" "$log_entry" >> "$log_file" || {
+              printf "Failed to write to log file: %s\n" "$log_file" >&2
+              rmdir "$lock_dir"
+              return 1
+          }
+
+          rmdir "$lock_dir"
+      }
+
+      # Handle logging based on flags
+      if [[ "${BatchMode:-false}" == "true" || $quiet_mode -eq 1 || "${QUIET_MODE:-n}" == "y" ]]; then
+          log_the_message
+      elif [[ $display_only -eq 1 ]]; then
+          printf "%s\n" "$log_entry"
+      else
+          printf "%s\n" "$log_entry"
+          log_the_message
+      fi
+  }
+  CreateDirectories() {
+      #shellcheck disable=SC2124
+      local dirs="$@"
+      for dir in $dirs; do
+          if [ ! -d "$dir" ]; then
+              mkdir -p "$dir" || {
+                  Message "Failed to create directory: %s\n" "$dir" >&2
+                  return 1
+              }
+          fi
+      done
+  }
+  SourceFiles() {
+    while [ -n "$1" ]; do
+      if [[ -f "$1" ]]; then
+        . "$1"
+      else
+        Message "ERROR: Could not find $1. Exiting."
+        exit 1
+      fi
+      shift
+    done
+  }
+  UserIsMedsrv() {
+    if [[ $USER != "medsrv" ]]; then 
+      return 1
+    else
+      return 0
+    fi
+  }
+  RequiredVariables() {
+    local missing_vars=()   # Array to hold names of unset variables
+    local var value all_set=true
+
+    # Check each variable passed as argument
+    for var in "$@"; do
+        eval "value=\$$var"
+        if [ -z "$value" ]; then
+            missing_vars+=("$var")
+            all_set=false
+        fi
+    done
+
+    # Handle the case where one or more variables are unset
+    if [ "${#missing_vars[@]}" -ne 0 ]; then
+        local missing_vars_list="${missing_vars[*]}"  # Create a space-separated list from the array
+        local calling_func="${FUNCNAME[1]}"  # This gets the name of the function that called verify_required_variables
+        Message "ERROR in $calling_func: The following required variables are not set: $missing_vars_list"
+        return 1  # Return non-zero status to indicate failure
+    fi
+
+    # If all variables are set, optionally log this status
+    if $all_set; then
+        Message -d "All required variables are set and have non-empty values." > /dev/null
+    fi
+  }
+  Verify_Check_Load_Is_Present() {
+    if [[ ! -f $(pwd)/checkLoad.sh ]]; then
+      Message "ERROR: checkLoad.sh is not present. Exiting."
+      exit 1
+    fi
+  }
+  checkLoad() {
+    Verify_Check_Load_Is_Present
+    "$(pwd)"/checkLoad.sh
+  }
+  Verify_Check_Time_Is_Present() {
+    if [[ ! -f $(pwd)/checkTime.sh ]]; then
+      Message "ERROR: checkTime.sh is not present. Exiting."
+      exit 1
+    fi
+  }
+  checkTime() {
+    Verify_Check_Time_Is_Present
+    "$(pwd)"/checkTime.sh
+  }
+  source_file_if_checksum_has_changed() {
+    #######################################
+    # DESCRIPTION: Sources a file if the checksum has changed since the last time it was sourced
+    # GLOBAL VARIABLES: $_MIGRATION_CFG_FILE, $_Migration_Cfg_File_Checksum, $_WDIR, $_CFGS_DIR
+    # ARGUMENTS:
+    #   $1 = File to source
+    # OUTPUTS:
+    #   Prints a decision prompt if the file has changed since the last time it was sourced
+    # RETURNS:
+    #   <none>
+    # EXAMPLE USAGE: source_file_if_checksum_has_changed "$_MIGRATION_CFG_FILE"
+    # CALLED BY: migration.start
+    # CALLS: Stream_Handler
+    #######################################
+    # TODO: Do we need to re-export if it sources due to a change?
+    local _file="$1"
+    local _checksum
+    local _resp="y"
+    case $_file in
+    "migration.cfg")
+      if [ -z "$_Migration_Cfg_File_Checksum" ]; then
+        # If the checksum is not set, then source the file and set the checksum
+        . "${_file:?}"
+        _Migration_Cfg_File_Checksum="$(md5sum "${_file:?}" | awk '{print $1}')"
+      else
+        # If the checksum is set, then check the checksum of the file
+        _checksum="$(md5sum "${_file:?}" | awk '{print $1}')"
+        if [ "$_checksum" != "$_Migration_Cfg_File_Checksum" ]; then
+          # If the checksums do not match, then source the file and set the checksum
+          printf "$(date) Configuration file modification detected. (Reloaded) File=%s\n" "${_file}"
+          . "${_file:?}"
+          _Migration_Cfg_File_Checksum="$_checksum"
+          sleep 3
+        fi
+      fi
+      ;;
+    "repository.cfg")
+      if [ -z "$_Repository_Cfg_File_Checksum" ]; then
+        # If the checksum is not set, then source the file and set the checksum
+        . "${HOME}/data/dicom.repository/repository.cfg"
+        _Repository_Cfg_File_Checksum="$(md5sum "${HOME}/data/dicom.repository/repository.cfg" | awk '{print $1}')"
+        return 0
+      else
+        # If the checksum is set, then check the checksum of the file
+        _checksum="$(md5sum "${HOME}/data/dicom.repository/repository.cfg" | awk '{print $1}')"
+        if [ "$_checksum" != "$_Repository_Cfg_File_Checksum" ]; then
+          # If the checksums do not match, then source the file and set the checksum
+          printf "$(date) Configuration file modification detected. (Reloaded) File=%s\n" "${_file}"
+          . "${HOME}/data/dicom.repository/repository.cfg"
+          _Repository_Cfg_File_Checksum="$_checksum"
+        fi
+      fi
+      ;;
+    *)
+      exit 1
+      ;;
+    esac
+  }
+  source_file_if_checksum_has_changed_new() {
+    calculate_checksum() {
+        md5sum "$1" | awk '{print $1}'
+    }
+    log_change_detected() {
+        echo "$(date) Configuration file modification detected. File=$1" | tee -a "${_LOGS_DIR}/${_INFO_LOG}" "${_LOGS_DIR}/${_ERROR_LOG}"
+    }
+    log_user_decision() {
+        echo "$(date) $1 File=$2" >> "${_LOGS_DIR}/${_INFO_LOG}"
+    }
+      local file_path="$1"
+      local ask_confirmation="$2"  # New argument to control user confirmation
+      local checksum_var="checksum_${file_path//\//_}"  # Create a safe variable name by replacing '/' with '_'
+      local current_checksum="${!checksum_var}"  # Indirect variable reference
+      local new_checksum=$(calculate_checksum "${file_path}")
+
+      if [ -z "$current_checksum" ]; then
+          . "$file_path"
+          declare "$checksum_var=$new_checksum"  # Set the variable indirectly
+          return 0
+      elif [ "$new_checksum" != "$current_checksum" ]; then
+          log_change_detected "$file_path"
+          if [[ "${ask_confirmation:=true}" == "true" ]]; then
+              printf "Do you want to reload the file? ([y]/n) "
+              read -r response
+              if [[ "$response" =~ ^[Nn] ]]; then
+                  log_user_decision "User chose not to reload the file." "$file_path"
+                  return 1
+              fi
+          fi
+          . "$file_path"
+          declare "$checksum_var=$new_checksum"  # Update the variable indirectly
+          log_user_decision "File reloaded." "$file_path"
+          return 0
+      else
+          return 1
+      fi
+    # Example usage
+    # source_file_if_checksum_has_changed_new "${CONFIG_DIR}/repository.cfg" true
+  }
+  get_case_number() {
+      while true; do
+          # Prompt the user for input
+          read -r -p "Please enter a five-digit case number: " case_number
+          
+          # Check if the input is a five-digit number
+          if [[ $case_number =~ ^[0-9]{5}$ ]]; then
+              # If valid, break the loop
+              break
+          else
+              # If invalid, inform the user and continue prompting
+              echo "Invalid input. Please ensure your input is exactly five digits."
+          fi
+      done
+
+      # Return the valid case number
+      echo "$case_number"
+  }
+  get_customer_name() {
+      while true; do
+          # Prompt the user for input
+          read -r -p "Please enter the customer name (up to 64 characters): " customer_name
+          
+          # Get the length of the input
+          local input_length=${#customer_name}
+          
+          # Check if the input is within the 64 character limit
+          if [[ $input_length -le 64 ]]; then
+              # If valid, break the loop
+              break
+          else
+              # If invalid, inform the user and continue prompting
+              echo "Invalid input. The name must not exceed 64 characters."
+          fi
+      done
+
+      # Return the valid customer name
+      echo "$customer_name"
+  }
+  SSH_is_Enabled() {
+    local label="$1"
+    # IP
+      local getIPforLabel="SELECT primaryip FROM systems WHERE label='$label';"
+      local ip
+      ip="$("$MYSQL_BIN" -BN -u medsrv --database="${MigDB:?}" -e "$getIPforLabel")"
+    # SSH
+      local getSSHflagForLabel="SELECT ssh FROM systems WHERE label='$label';"
+      local sshFlag
+      sshFlag="$("$MYSQL_BIN" -BN -u medsrv --database="${MigDB}" -e "$getSSHflagForLabel")"
+    
+    if [ "${sshFlag:-n}" == "n" ]; then
+      # printf "SSH capability for %s is DISABLED! To change, execute ./MigAdmin.sh -e\n" "$label"
+      # exit 1
+      return 1
+    else
+      if ! SSH_is_Working "$ip"; then
+        return 2
+      fi
+    fi
+  }
+  SSH_is_Working() {
+    local ip="$1"
+    if ! ssh -n -q -o PasswordAuthentication=no -o BatchMode=yes -o StrictHostKeyChecking=no "medsrv@${ip}" "w" >/dev/null 2>&1; then
+      # printf "Failed ssh connection to medsrv@%s\n" "$ip"
+      # exit 1
+      return 1
+    fi
+  }
+  DatabaseExists() {
+    local database_name
+    database_name="$1"
+
+    if ! "$MYSQL_BIN" -BN -u medsrv -e "SHOW DATABASES;" | grep -wqs "$database_name"; then
+      return 1
+    else
+      return 0
+    fi
+  }
+
+# ENVIRONMENT MANAGEMENT ✔
+  # Belongs here in universal.lib. Directly Used by initialize_script_environment() which is used by all child scripts.
+  export_config_variables() {
+    # Function to dynamically export variables from a sourced configuration file
+      local config_file="$1"
+      local var_name
+      local old_ifs="$IFS"  # Preserve the original IFS
+      IFS=$'\n'  # Change IFS to handle new line as field separator
+
+      # Iterate over lines that look like variable assignments
+      # shellcheck disable=SC2013
+      for line in $(grep '^[[:alnum:]_]*=.*' "$config_file"); do
+          var_name=$(echo "$line" | cut -d'=' -f1)
+          add_to_env "$var_name"  # Add to env_vars array for tracking
+      done
+
+      IFS="$old_ifs"  # Restore the original IFS
+
+      export_env
+  }
+  # Belongs here in universal.lib. Directly Used by initialize_script_environment() which is used by all child scripts.
+  add_to_env() {
+    # Function to add variables to the environment list
+    # Usage: add_to_env "VAR1"
+      local var_name="$1"
+      env_vars+=("$var_name")  # Add the variable name to the array
+  }
+  # Belongs here in universal.lib. Indirectly Used by initialize_script_environment() which is used by all child scripts.
+  export_env() {
+    # shellcheck disable=SC2163
+    # Function to export all variables in the environment list
+    # Usage: export_env
+    # The warning from the shell linter in VS Code might be suggesting that "$var_name" does not directly reference the
+    # value of the variable named var_name but instead attempts to export the variable with the name held in var_name.
+    # This is exactly what you want in this scenario. The linter may be confused because it's common to see variable
+    # expansion with braces like ${var_name} used directly in scripts.
+      for var_name in "${env_vars[@]}"; do
+          export "$var_name"
+      done
+  }
+  # Belongs here in universal.lib. Added #TODO for adding display_env opt to each script.
+  display_env() {
+    # Function to display the current environment contents
+    # Usage: display_env
+      Message -d "Current environment settings:"
+      for var_name in "${env_vars[@]}"; do
+          echo "$var_name='${!var_name}'"
+      done
+  }
+  # Belongs here in universal.lib. Indirectly Used by initialize_script_environment() which is used by all child scripts.
+  verify_env() {
+    # Function to verify that all required environmental variables are set and not empty
+    # Usage: verify_env
+      local all_set=true
+      for var_name in "${env_vars[@]}"; do
+          if [[ -z "${!var_name}" ]]; then
+              Message "Error: $var_name is not set or is empty."
+              all_set=false
+          fi
+      done
+      if $all_set; then
+          Message -d "All required variables are set and have non-empty values." > /dev/null
+      else
+          Message "Some required variables are missing or empty."
+          return 1  # Return non-zero status to indicate failure
+      fi
+  }
+  # Belongs here in universal.lib. Used by MigAdmin.sh and MigResearch.sh
+  #shellcheck disable=SC2034
+  load_system_details() {
+      local targetSQL="SELECT proximity, label, primaryip, internalip, aet, port, iseradpacs, epMajorVersion FROM systems WHERE role='target';"
+      local sourceSQL="SELECT proximity, label, primaryip, internalip, aet, port, iseradpacs, epMajorVersion FROM systems WHERE role='source';"
+
+      # Retrieve data for the target system
+      # shellcheck disable=SC2046
+      read -r Target_Proximity Target_Label Target_IP Target_Internal_IP Target_AET Target_Port Target_isErad Target_Version <<< $("$MYSQL_BIN" -BN -u medsrv --database="$MigDB" -e "$targetSQL")
+
+      # Retrieve data for the source system
+      # shellcheck disable=SC2046
+      read -r Source_Proximity Source_Label Source_IP Source_Internal_IP Source_AET Source_Port Source_isErad Source_Version <<< $("$MYSQL_BIN" -BN -u medsrv --database="$MigDB" -e "$sourceSQL")
+
+      # Now the variables are populated and can be used in your script
+      # echo "Target Label: $Target_Label"
+      # echo "Target IP: $Target_IP"
+      # echo "Target AET: $Target_AET"
+      # echo "Target Port: $Target_Port"
+
+      # echo "Source Label: $Source_Label"
+      # echo "Source IP: $Source_IP"
+      # echo "Source AET: $Source_AET"
+      # echo "Source Port: $Source_Port"
+
+      # Add the variables to the environment list
+      add_to_env "Target_Proximity"
+      add_to_env "Target_Label"
+      add_to_env "Target_IP"
+      add_to_env "Target_Internal_IP"
+      add_to_env "Target_AET"
+      add_to_env "Target_Port"
+      add_to_env "Target_isErad"
+      add_to_env "Target_Version"
+      add_to_env "Source_Proximity"
+      add_to_env "Source_Label"
+      add_to_env "Source_IP"
+      add_to_env "Source_Internal_IP"
+      add_to_env "Source_AET"
+      add_to_env "Source_Port"
+      add_to_env "Source_isErad"
+      add_to_env "Source_Version"
+
+      # Export all variables in the environment list
+      export_env
+  }

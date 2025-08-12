@@ -1,0 +1,11 @@
+# Migration configuration (rendered by Ansible)
+# Timestamp: {{ ansible_date_time.iso8601 if ansible_date_time is defined else '' }}
+
+# Case metadata
+CaseNumber="{{ CaseNumber }}"
+CustomerName="{{ CustomerName }}"
+MigrationDB="{{ MigrationDB }}"
+WorkDirectory="{{ WorkDirectory }}"
+
+# Load default workspace paths
+. "{{ WorkDirectory }}/.default.cfg"

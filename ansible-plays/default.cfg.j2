@@ -1,0 +1,10 @@
+# Default workspace paths (sourced by migration.cfg)
+StudyListDirectory="{{ WorkDirectory }}/lists"
+LogsDirectory="{{ WorkDirectory }}/logs"
+ConfigDirectory="{{ WorkDirectory }}/conf"
+BackupDirectory="{{ WorkDirectory }}/backup"
+_TLS_OPT="+tls ${SSL_SITE_KEY:?} ${SSL_SITE_CERT:?} -ic"
+_DATE_FMT="%Y-%m-%d %H:%M:%S"
+_LOG_MIGRATION="migration.log"
+_LOG_MIGRATION_ERROR="migration-errors.log"
+MYSQL_BIN="/home/medsrv/component/mysql/bin/mysql"

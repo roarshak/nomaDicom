@@ -1,0 +1,139 @@
+---
+- name: Setup migration workspace
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Required inputs (pass via -e). Example:
+    # -e "CaseNumber=87605 _Customer_Name=ProHealth MigDB=migration_87605 WorkDirectory=/home/medsrv/work/case_87605"
+    CaseNumber: ""
+    _Customer_Name: ""
+    MigDB: ""
+    WorkDirectory: ""
+
+    # Ownership & modes
+    workspace_owner: "medsrv"
+    workspace_group: "medsrv"
+    dir_mode: "0750"
+    file_mode: "0640"
+
+  pre_tasks:
+    - name: Validate required vars are provided (non-empty)
+      ansible.builtin.assert:
+        that:
+          - CaseNumber | length > 0
+          - _Customer_Name | length > 0
+          - MigDB | length > 0
+          - WorkDirectory | length > 0
+        fail_msg: "CaseNumber, _Customer_Name, MigDB, and WorkDirectory are required. Provide with -e."
+
+    - name: Validate WorkDirectory path format
+      ansible.builtin.assert:
+        that:
+          - WorkDirectory is match('^/home/medsrv/work/case_[0-9]+$')
+        fail_msg: "WorkDirectory must match /home/medsrv/work/case_XXXXX (digits only)."
+
+    - name: Define derived directories
+      ansible.builtin.set_fact:
+        StudyListDirectory: "{{ WorkDirectory }}/lists"
+        LogsDirectory: "{{ WorkDirectory }}/logs"
+        ConfigDirectory: "{{ WorkDirectory }}/conf"
+        BackupDirectory: "{{ WorkDirectory }}/backup"
+        MigrationCfgPath: "{{ WorkDirectory }}/migration.cfg"
+
+    - name: Fail fast if any derived dir var is empty (defensive)
+      ansible.builtin.assert:
+        that:
+          - StudyListDirectory | length > 0
+          - LogsDirectory | length > 0
+          - ConfigDirectory | length > 0
+          - BackupDirectory | length > 0
+
+  tasks:
+    - name: Create workspace directories
+      become: true
+      block:
+        - name: Ensure WorkDirectory exists
+          ansible.builtin.file:
+            path: "{{ WorkDirectory }}"
+            state: directory
+            owner: "{{ workspace_owner }}"
+            group: "{{ workspace_group }}"
+            mode: "{{ dir_mode }}"
+
+        - name: Ensure subdirectories exist
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: "{{ workspace_owner }}"
+            group: "{{ workspace_group }}"
+            mode: "{{ dir_mode }}"
+          loop:
+            - "{{ StudyListDirectory }}"
+            - "{{ LogsDirectory }}"
+            - "{{ ConfigDirectory }}"
+            - "{{ BackupDirectory }}"
+
+        - name: Check if migration.cfg exists
+          ansible.builtin.stat:
+            path: "{{ MigrationCfgPath }}"
+          register: mig_cfg_stat
+
+        - name: Read existing migration.cfg for comparison
+          ansible.builtin.slurp:
+            path: "{{ MigrationCfgPath }}"
+          register: mig_cfg_raw
+          when: mig_cfg_stat.stat.exists
+
+        - name: Extract existing values
+          ansible.builtin.set_fact:
+            mig_cfg_text: "{{ mig_cfg_raw.content | b64decode }}"
+            cfg_CaseNumber: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^CaseNumber=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
+            cfg_CustomerName: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^CustomerName=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
+            cfg_MigrationDB: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^MigrationDB=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
+            cfg_WorkDirectory: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^WorkDirectory=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
+          when: mig_cfg_stat.stat.exists
+
+        - name: Abort on mismatch with provided variables
+          ansible.builtin.assert:
+            that:
+              - cfg_CaseNumber == CaseNumber
+              - cfg_CustomerName == CustomerName
+              - cfg_MigrationDB == MigrationDB
+              - cfg_WorkDirectory == WorkDirectory
+            success_msg: "Existing migration.cfg matches provided variables."
+            fail_msg: >-
+              Existing migration.cfg at {{ MigrationCfgPath }} has different values.
+              Refusing to overwrite. Pass the correct -e vars or update the file.
+          when: mig_cfg_stat.stat.exists
+
+        - name: Render .default.cfg (workspace path defaults)
+          ansible.builtin.template:
+            src: "templates/.default.cfg.j2"
+            dest: "{{ WorkDirectory }}/.default.cfg"
+            owner: "{{ workspace_owner }}"
+            group: "{{ workspace_group }}"
+            mode: "{{ file_mode }}"
+            backup: true
+        - name: Render migration.cfg from template (with backup)
+          ansible.builtin.template:
+            src: "templates/migration.cfg.j2"
+            dest: "{{ MigrationCfgPath }}"
+            owner: "{{ workspace_owner }}"
+            group: "{{ workspace_group }}"
+            mode: "{{ file_mode }}"
+            backup: true
+      tags: [workspace, config]
+
+    - name: Summary (no-op in check mode)
+      ansible.builtin.debug:
+        msg:
+          - "Workspace initialized for CaseNumber={{ CaseNumber }} _Customer_Name={{ _Customer_Name }}"
+          - "WorkDirectory={{ WorkDirectory }}"
+          - "StudyListDirectory={{ StudyListDirectory }}"
+          - "LogsDirectory={{ LogsDirectory }}"
+          - "ConfigDirectory={{ ConfigDirectory }}"
+          - "BackupDirectory={{ BackupDirectory }}"
+          - "migration.cfg => {{ MigrationCfgPath }}"
+      tags: [summary]

@@ -5,12 +5,12 @@
   gather_facts: false
 
   vars:
-  # Required inputs (pass via -e). Example:
-  # -e "CaseNumber=87605 CustomerName=ProHealth MigrationDB=migration_87605 WorkDirectory=/home/medsrv/work/case_87605"
-  CaseNumber: ""
-  CustomerName: ""
-  MigrationDB: ""
-  WorkDirectory: ""
+    # Required inputs (pass via -e). Example:
+    # -e "CaseNumber=87605 CustomerName=ProHealth MigrationDB=migration_87605 WorkDirectory=/home/medsrv/work/case_87605"
+    CaseNumber: ""
+    CustomerName: ""
+    MigrationDB: ""
+    WorkDirectory: ""
 
     # Ownership & modes
     workspace_owner: "medsrv"
@@ -54,10 +54,25 @@
     - name: Clone nomaDicom repo for scripts
       ansible.builtin.git:
         repo: 'https://github.com/roarshak/nomaDicom.git'
-        dest: '{{ WorkDirectory }}/nomaDicom-scripts'
+        dest: '{{ WorkDirectory }}'
         version: 'main'
         force: yes
       tags: [scripts, clone]
+
+    - name: Set ownership for all files in workspace
+      ansible.builtin.file:
+        path: "{{ WorkDirectory }}"
+        owner: "{{ workspace_owner }}"
+        group: "{{ workspace_group }}"
+        recurse: yes
+      tags: [scripts, permissions]
+
+    - name: Make all .sh scripts in workspace executable
+      ansible.builtin.shell: |
+        find {{ WorkDirectory }} -type f -name '*.sh' -exec chmod 750 {} +
+      args:
+        warn: false
+      tags: [scripts, permissions]
 
     - name: Create workspace directories
       become: true
@@ -118,15 +133,16 @@
 
         - name: Render .default.cfg (workspace path defaults)
           ansible.builtin.template:
-            src: "templates/.default.cfg.j2"
+            src: ".default.cfg.j2"
             dest: "{{ WorkDirectory }}/.default.cfg"
             owner: "{{ workspace_owner }}"
             group: "{{ workspace_group }}"
             mode: "{{ file_mode }}"
             backup: true
+
         - name: Render migration.cfg from template (with backup)
           ansible.builtin.template:
-            src: "templates/migration.cfg.j2"
+            src: "migration.cfg.j2"
             dest: "{{ MigrationCfgPath }}"
             owner: "{{ workspace_owner }}"
             group: "{{ workspace_group }}"
@@ -147,7 +163,7 @@
     - name: Summary (no-op in check mode)
       ansible.builtin.debug:
         msg:
-          - "Workspace initialized for CaseNumber={{ CaseNumber }} _Customer_Name={{ _Customer_Name }}"
+          - "Workspace initialized for CaseNumber={{ CaseNumber }} CustomerName={{ CustomerName }}"
           - "WorkDirectory={{ WorkDirectory }}"
           - "StudyListDirectory={{ StudyListDirectory }}"
           - "LogsDirectory={{ LogsDirectory }}"

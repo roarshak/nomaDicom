@@ -5,14 +5,10 @@
   gather_facts: false
 
   vars:
-    # Required inputs (pass via -e). Example:
-    # -e "CaseNumber=87605 CustomerName=ProHealth MigrationDB=migration_87605 WorkDirectory=/home/medsrv/work/case_87605"
+  # Required inputs (pass via -e). Example:
+  # -e "CaseNumber=87605 CustomerName=ProHealth"
     CaseNumber: ""
     CustomerName: ""
-    MigrationDB: ""
-    WorkDirectory: ""
-
-    # Ownership & modes
     workspace_owner: "medsrv"
     workspace_group: "medsrv"
     dir_mode: "0750"
@@ -24,9 +20,12 @@
         that:
           - CaseNumber | length > 0
           - CustomerName | length > 0
-          - MigrationDB | length > 0
-          - WorkDirectory | length > 0
-        fail_msg: "CaseNumber, CustomerName, MigrationDB, and WorkDirectory are required. Provide with -e."
+        fail_msg: "CaseNumber and CustomerName are required. Provide with -e."
+
+    - name: Set WorkDirectory and MigDB from CaseNumber
+      ansible.builtin.set_fact:
+        WorkDirectory: "/home/medsrv/work/case_{{ CaseNumber }}"
+        MigDB: "case_{{ CaseNumber }}"
 
     - name: Validate WorkDirectory path format
       ansible.builtin.assert:
@@ -51,6 +50,13 @@
           - BackupDirectory | length > 0
 
   tasks:
+    # - name: Add safe.directory for workspace to local git config
+    #   ansible.builtin.command:
+    #     cmd: git config --add safe.directory {{ WorkDirectory }}
+    #   args:
+    #     chdir: '{{ WorkDirectory }}'
+    #   ignore_errors: true
+
     - name: Clone nomaDicom repo for scripts
       ansible.builtin.git:
         repo: 'https://github.com/roarshak/nomaDicom.git'
@@ -114,7 +120,7 @@
             mig_cfg_text: "{{ mig_cfg_raw.content | b64decode }}"
             cfg_CaseNumber: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^CaseNumber=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
             cfg_CustomerName: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^CustomerName=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
-            cfg_MigrationDB: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^MigrationDB=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
+            cfg_MigDB: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^MigDB=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
             cfg_WorkDirectory: "{{ (mig_cfg_raw.content | b64decode) | regex_search('^WorkDirectory=\"?([^\"]+)\"?', '\\1', multiline=True) | default('', true) }}"
           when: mig_cfg_stat.stat.exists
 
@@ -123,7 +129,7 @@
             that:
               - cfg_CaseNumber == CaseNumber
               - cfg_CustomerName == CustomerName
-              - cfg_MigrationDB == MigrationDB
+              - cfg_MigDB == MigDB
               - cfg_WorkDirectory == WorkDirectory
             success_msg: "Existing migration.cfg matches provided variables."
             fail_msg: >-

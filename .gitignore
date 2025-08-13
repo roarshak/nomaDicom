@@ -1,3 +1,5 @@
 nomaDicom-2025.code-workspace
 .github/copilot-instructions.md
 migration.cfg
+templates/dcm-node.cfg.j2
+templates/create-dcm-node.yaml

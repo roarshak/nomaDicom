@@ -9,6 +9,27 @@ ss_tbl="studies_systems"
 system_tbl="systems"
 # TODO: Export_Directory?
 # Define Functions
+  Compress_Study_Directory() {
+    local directory="$1"
+    local compress_script="/home/medsrv/ASP_compression/compressDirectory.sh"
+    if [[ -d "$directory" ]]; then
+      "$compress_script" "$directory"
+      local status=$?
+      if [ $status -eq 0 ]; then
+        if [ "$executedByUser" = "True" ]; then
+          printf "%s compressed %s using ASP_compression script\n" "$(date +"$_DATE_FMT")" "$directory"
+        elif [ "$executedByUser" = "False" ]; then
+          printf "%s compressed %s using ASP_compression script\n" "$(date +"$_DATE_FMT")" "$directory" | tee -a "$output_log"
+        fi
+      else
+        if [ "$executedByUser" = "True" ]; then
+          printf "%s WARNING: compression of %s failed (exit code %d), continuing.\n" "$(date +"$_DATE_FMT")" "$directory" "$status"
+        elif [ "$executedByUser" = "False" ]; then
+          printf "%s WARNING: compression of %s failed (exit code %d), continuing.\n" "$(date +"$_DATE_FMT")" "$directory" "$status" | tee -a "$output_log"
+        fi
+      fi
+    fi
+  }
   check_and_source_config() {
     while [ -n "$1" ]; do
       if [[ -f "$1" ]]; then
@@ -228,6 +249,8 @@ system_tbl="systems"
       Study_Date="$(getstudyDate "$SUID")"
       Study_PbR_List=($(getPbRList "$Study_Directory"))
       Study_NonPbR_List=($(getNonPbRList "$Study_Directory"))
+    # Compress the study directory before deriving export location
+      Compress_Study_Directory "$Study_Directory"
     # Prelim Checks / Exit Conditions
       Study_Dir_Valid_Check || return 1
       Zero_Object_Study_Check || return 1

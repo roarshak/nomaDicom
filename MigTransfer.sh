@@ -686,10 +686,13 @@ _Concurrent_Threads=3
   skip_if_processed() {
     local suid
     suid="$1"
-    # Uses fast grep to check if the SUID is already present in the output file
-    # if [ -f "$_LOG_MIGRATION" ]; then
-    if [ -f "$_LOG_MIGRATION" ] && [ "${skipProcessed:-false}" = "true" ] && grep -qF "$suid" "$_LOG_MIGRATION"; then
-      return 0
+    # Only skip if skipProcessed is true
+    if [ "${skipProcessed:-false}" = "true" ]; then
+      if [ -f "$_LOG_MIGRATION" ] && grep -qF "$suid" "$_LOG_MIGRATION"; then
+        return 0
+      else
+        return 1
+      fi
     else
       return 1
     fi

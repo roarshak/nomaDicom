@@ -4,3 +4,5 @@ migration.cfg
 templates/dcm-node.cfg.j2
 templates/create-dcm-node.yaml
 templates/.default.cfg.j2
+file.tmp
+file.tmp.sh

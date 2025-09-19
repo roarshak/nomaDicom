@@ -1,5 +1,5 @@
 #!/bin/bash
-#shellcheck disable=SC1090,SC1091,SC2155
+#shellcheck disable=SC1090,SC1091,SC2155,SC2034
 ####################################################
 RED='\033[0;31m'    # USED FOR COLORIZING OUTPUT: RED
 NC='\033[0m'        # USED FOR COLORIZING OUTPUT: No Color
@@ -726,6 +726,7 @@ FreshInstall() {
     # fi
 }
 AutoRetrieveAndImportStudyLists() {
+    # shellcheck disable=SC2207
     local labels=( $(GetAutoRetrievalLabels) )
     if [[ ${#labels[@]} -eq 0 ]]; then
         echo -e "\n==== WARNING ====\nNo systems found with autoRetrieveLists='true' and ssh='y'.\n=================\n"
@@ -1025,6 +1026,7 @@ resolve_system_label() {
 AutoImportStudyLists() {
     # FIXME: This does not yet work as inteded.
     # I am looking to have a function that fetches the study lists, imports them, and then updates (refresh verification) the db
+    # shellcheck disable=SC2207
     local labels=( $(GetAutoRetrievalLabels) )  # Fetch labels with autoRetrieveLists true and ssh 'y'
     
     for label in "${labels[@]}"; do

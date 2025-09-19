@@ -1,0 +1,203 @@
+#!/bin/bash
+maybe_extra() {
+
+  # Get study info
+  local _REMOTE_PROTOCOL="T"
+  if [ "$_REMOTE_PROTOCOL" = "S" ]; then
+    _study_info="$(/home/medsrv/component/dicom/bin/findscu -S +tls "$SSL_SITE_KEY" "$SSL_SITE_CERT" -ic +ps --aetitle "$_LOCAL_AE_TITLE" --key 0008,0052=STUDY --key 0020,000D="$Study_Instance_UID" --key 0020,1208 --key 0008,0020 --key 0008,0061 --key 0008,0050 --key 0010,0020 --call $_REMOTE_AE_TITLE $_REMOTE_IP $_REMOTE_PORT)"
+  else
+    _study_info="$(/home/medsrv/component/dicom/bin/findscu -S --aetitle "$_LOCAL_AE_TITLE" --key 0008,0052=STUDY --key 0020,000D="$Study_Instance_UID" --key 0020,1208 --key 0008,0020 --key 0008,0061 --key 0008,0050 --key 0010,0020 --call $_REMOTE_AE_TITLE $_REMOTE_IP $_REMOTE_PORT)"
+  fi
+
+  # Extract specific info
+    tmp_file=$(mktemp)
+    echo "$_study_info" >"$tmp_file"
+  # Use grep and cut to extract the relevant information from the file
+    _pid=$(grep "(0010,0020)\|PatientID" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')
+    _num_images="$(grep "(0020,1208)\|NumberOfStudyRelatedInstances" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+    _date="$(grep "(0008,0020)\|StudyDate" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+    _modality="$(grep "(0008,0061)\|Modality" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+    _accno="$(grep "(0008,0050)\|AccessionNumber" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+  # Remove the temporary file
+    rm "$tmp_file"
+}
+SOPIUID_Retrieval() {
+  local Study_Instance_UID="$1"
+  local TargetPACS_QR_AET="$2"
+  local TargetPACS_Primary_IP="$2"
+  # local TargetPACS_PORT=""
+  local LocalSystem_AET=""
+  local SourcePACS_QR_AET="$3"
+  local SourcePACS_Primary_IP="$4"
+  local SourcePACS_QR_PORT="$5"
+
+  DRV_Temp_Dir="$(pwd)/tmp"
+  [[ ! -d "$DRV_Temp_Dir" ]] && mkdir "$DRV_Temp_Dir"
+
+  # Query the local imagemedical.Dcobject table for the SOPInstanceUIDs for the StudyInstanceUID
+  # Exclude SOPCLUIDs for PBR Files ONLY IF the remote system is not eRAD PACS system
+  # 	(0008,0016) UI =PracticeBuilderReport                   #  30, 1 SOPClassUID
+    sql.sh "SELECT SOPIUID FROM imagemedical.Dcobject WHERE STYIUID = '${Study_Instance_UID}'" -N >"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/local_sopiuids.txt
+
+# full sopiuid comparison
+  printf "FindSCU Series Cmd: %s\n" "/home/medsrv/component/dicom/bin/findscu -S --aetitle $LocalSystem_AET --key 0008,0052=SERIES --key 0020,000D=$Study_Instance_UID --key 0020,000E --call $SourcePACS_QR_AET $SourcePACS_Primary_IP $SourcePACS_QR_PORT 2>&1 | grep SeriesInstanceUID | cut -d \"[\" -f2 | cut -d \"]\" -f1"
+  series_instance_uids="$(/home/medsrv/component/dicom/bin/findscu -S --aetitle "$LocalSystem_AET" --key 0008,0052=SERIES --key 0020,000D="$Study_Instance_UID" --key 0020,000E --call $SourcePACS_QR_AET $SourcePACS_Primary_IP $SourcePACS_QR_PORT 2>&1 | grep SeriesInstanceUID | cut -d "[" -f2 | cut -d "]" -f1)"
+  while read -r seriuid; do
+    printf "FindSCU SOPInstanceUID Cmd: %s\n" "/home/medsrv/component/dicom/bin/findscu -S --aetitle $LocalSystem_AET --key 0008,0052=IMAGE --key 0020,000D=$Study_Instance_UID --key 0020,000E=$seriuid --key 0008,0018 --call $SourcePACS_QR_AET $SourcePACS_Primary_IP $SourcePACS_QR_PORT 2>&1 | grep SOPInstanceUID | cut -d \"[\" -f2 | cut -d \"]\" -f1"
+    sopiuids_per_seriesInstanceUID="$(/home/medsrv/component/dicom/bin/findscu -S --aetitle $LocalSystem_AET --key 0008,0052=IMAGE --key 0020,000D="$Study_Instance_UID" --key 0020,000E=$seriuid --key 0008,0018 --call $SourcePACS_QR_AET $SourcePACS_Primary_IP $SourcePACS_QR_PORT 2>&1 | grep SOPInstanceUID | cut -d "[" -f2 | cut -d "]" -f1)"
+    while read -r sopiuid; do
+      #printf "%s SOURCE=%s(%s) SUID=%s SERIUID=%s SOPIUID=%s\n" "$(date)" "$SourcePACS_QR_AET" "$SourcePACS_Primary_IP" "$Study_Instance_UID" "$seriuid" "$sopiuid"
+      printf "%s\n" "$sopiuid" >>"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/remote_sopiuids.txt
+      printf "%s\n" "$seriuid" "$sopiuid" >>"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/seriuid_sopiuids.txt
+    done <<-EOSOPIUIDS
+      $sopiuids_per_seriesInstanceUID
+EOSOPIUIDS
+  done <<-EOSERIUIDS
+    $series_instance_uids
+EOSERIUIDS
+
+
+  # Compare the two lists with comm and identify the missing SOPIUIDs
+    comm -23 "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/local_sopiuids.txt "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/remote_sopiuids.txt >"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids.txt
+
+  # Iterate through the missing SOPIUIDs and get the filenames (full paths), for use by storescu
+  while read -r sopiuid; do
+    pass
+  done <<-EOMISSINGSOPIUIDS
+    $(cat "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids.txt)
+EOMISSINGSOPIUIDS
+
+  # Get the number of missing SOPIUIDs & assign it to a variable
+  missing_sopiuids_count="$(wc -l <"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids.txt)"
+  printf "%s SOURCE=%s(%s) SUID=%s MISSING=%s\n" "$(date)" "$SourcePACS_QR_AET" "$SourcePACS_Primary_IP" "$Study_Instance_UID" "$missing_sopiuids_count"
+
+  # If the number of missing SOPIUIDs is greater than 0, then execute a storescu for each missing SOPIUID
+  obj_failures=0
+  if [ "$missing_sopiuids_count" -gt 0 ]; then
+    while read -r missing_sopiuid; do
+      # Execute a storescu for the missing SOPIUID
+      /home/medsrv/component/dicom/bin/storescu -R --aetitle "$TargetPACS_QR_AET" --call "$SourcePACS_QR_AET" "$SourcePACS_Primary_IP" "$SourcePACS_QR_PORT" "$Study_Directory"/"$missing_sopiuid" >"${_TMP_DIR}"/storescu.tmp.log 2>&1
+      retval=$?
+      if [ "$retval" -ne "0" ] && [ "$retval" -ne "72" ]; then # return value of 72 means there are soft edit changes in the PbR
+        #increment obj failure counter
+        obj_failures=$((obj_failures + 1))
+        printf "%s\n" "/home/medsrv/component/dicom/bin/storescu -R --aetitle $TargetPACS_QR_AET --call $SourcePACS_QR_AET $SourcePACS_Primary_IP $SourcePACS_QR_PORT $Study_Directory/$missing_sopiuid" >>"${_LOGS_DIR}"/storescu-failures.log
+      else
+        #increment obj success counter
+        obj_successes=$((obj_successes + 1))
+      fi
+      # printf "Command: %s\n" "/home/medsrv/component/dicom/bin/storescu -R --aetitle $TargetPACS_QR_AET --call $SourcePACS_QR_AET $SourcePACS_Primary_IP $SourcePACS_QR_PORT $Study_Directory/$missing_sopiuid"
+    done <<-EOMISSINGSOPIUIDS
+      $(cat "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids_filenames.txt)
+EOMISSINGSOPIUIDS
+
+    if [ "$obj_failures" -ne "0" ]; then
+      printf "storescu failed:t/s/f %s/%s/%s\n" "$missing_sopiuids_count" "${obj_successes:-0}" "${obj_failures:-0}" | tee -a "${_LOGS_DIR}"/"${_ERROR_LOG}"
+      # set comment='storescu failed' for the study (styiuid) in the ${_MIGRATION_DATABASE}.studies table
+      sql.sh "UPDATE ${_MIGRATION_DATABASE}.studies SET comment='storescu failed' WHERE styiuid = '${Study_Instance_UID}'"
+    else
+      printf "success:t/s/f %s/%s/%s\n" "$missing_sopiuids_count" "${obj_successes:-0}" "${obj_failures:-0}" | tee -a "${_LOGS_DIR}"/"${_INFO_LOG}"
+      # Set migrated='y' for the study (styiuid) in the ${_MIGRATION_DATABASE}.studies table
+      sql.sh "UPDATE ${_MIGRATION_DATABASE}.studies SET migrated='y', priority = -1 WHERE styiuid = '${Study_Instance_UID}'"
+    fi
+
+  fi
+}
+
+source_material() {
+  # printf "Validating %s. Local numofobj: %s, Remote numofobj: %s\n" "$Study_Instance_UID" "$numofobj_local" "$numofobj_remote"
+  printf "%s\n" "$Study_Info_For_Displaying"
+  if [ ! -d "${DRV_Temp_Dir}"/"${Study_Instance_UID}" ]; then
+    mkdir -p "${DRV_Temp_Dir}"/"${Study_Instance_UID}"
+  else
+    rm --preserve-root -rf "${DRV_Temp_Dir}"/"${Study_Instance_UID:?}"
+    mkdir -p "${DRV_Temp_Dir}"/"${Study_Instance_UID}"
+  fi
+
+  # Get study info
+  if [ "$_REMOTE_PROTOCOL" = "S" ]; then
+    _study_info="$(/home/medsrv/component/dicom/bin/findscu -S +tls "$SSL_SITE_KEY" "$SSL_SITE_CERT" -ic +ps --aetitle "$TargetPACS_QR_AET" --key 0008,0052=STUDY --key 0020,000D="$Study_Instance_UID" --key 0020,1208 --key 0008,0020 --key 0008,0061 --key 0008,0050 --key 0010,0020 --call $_REMOTE_AE_TITLE $_REMOTE_IP $_REMOTE_PORT)"
+  else
+    _study_info="$(/home/medsrv/component/dicom/bin/findscu -S --aetitle "$TargetPACS_QR_AET" --key 0008,0052=STUDY --key 0020,000D="$Study_Instance_UID" --key 0020,1208 --key 0008,0020 --key 0008,0061 --key 0008,0050 --key 0010,0020 --call $_REMOTE_AE_TITLE $_REMOTE_IP $_REMOTE_PORT)"
+  fi
+  # Extract specific info
+  tmp_file=$(mktemp)
+  echo "$_study_info" >"$tmp_file"
+  # Use grep and cut to extract the relevant information from the file
+  _pid=$(grep "(0010,0020)\|PatientID" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')
+  _num_images="$(grep "(0020,1208)\|NumberOfStudyRelatedInstances" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+  _date="$(grep "(0008,0020)\|StudyDate" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+  _modality="$(grep "(0008,0061)\|Modality" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+  _accno="$(grep "(0008,0050)\|AccessionNumber" "$tmp_file" | cut -d ' ' -f 3 | tr -d '[]')"
+  # Remove the temporary file
+  rm "$tmp_file"
+  # Add the study info to the database
+  sql.sh "INSERT INTO ${_MIGRATION_DATABASE}.${_MIGRATION_TABLE_STUDIES} (styiuid, accno, pid, styDate, modality, migrated, comment) VALUES ('$Study_Instance_UID','$_accno','$_pid','$_date','$_modality', 'n', '') ON DUPLICATE KEY UPDATE styiuid=styiuid;"
+  sql.sh "INSERT INTO ${_MIGRATION_DATABASE}.studies_systems (styiuid, system_id, numofobj, attempts) VALUES ('$Study_Instance_UID', '$RemotePACS_System_ID', '$_num_images', '0') ON DUPLICATE KEY UPDATE styiuid=styiuid;" -N
+  # full sopiuid comparison
+  printf "FindSCU Series Cmd: %s\n" "/home/medsrv/component/dicom/bin/findscu -S --aetitle $_LOCAL_AE_TITLE --key 0008,0052=SERIES --key 0020,000D=$Study_Instance_UID --key 0020,000E --call $RemotePACS_QR_AET $RemotePACS_Primary_IP $RemotePACS_QR_PORT 2>&1 | grep SeriesInstanceUID | cut -d \"[\" -f2 | cut -d \"]\" -f1"
+  series_instance_uids="$(/home/medsrv/component/dicom/bin/findscu -S --aetitle "$_LOCAL_AE_TITLE" --key 0008,0052=SERIES --key 0020,000D="$Study_Instance_UID" --key 0020,000E --call $RemotePACS_QR_AET $RemotePACS_Primary_IP $RemotePACS_QR_PORT 2>&1 | grep SeriesInstanceUID | cut -d "[" -f2 | cut -d "]" -f1)"
+  while read -r seriuid; do
+    printf "FindSCU SOPInstanceUID Cmd: %s\n" "/home/medsrv/component/dicom/bin/findscu -S --aetitle $_LOCAL_AE_TITLE --key 0008,0052=IMAGE --key 0020,000D=$Study_Instance_UID --key 0020,000E=$seriuid --key 0008,0018 --call $RemotePACS_QR_AET $RemotePACS_Primary_IP $RemotePACS_QR_PORT 2>&1 | grep SOPInstanceUID | cut -d \"[\" -f2 | cut -d \"]\" -f1"
+    sopiuids_per_seriesInstanceUID="$(/home/medsrv/component/dicom/bin/findscu -S --aetitle $_LOCAL_AE_TITLE --key 0008,0052=IMAGE --key 0020,000D="$Study_Instance_UID" --key 0020,000E=$seriuid --key 0008,0018 --call $RemotePACS_QR_AET $RemotePACS_Primary_IP $RemotePACS_QR_PORT 2>&1 | grep SOPInstanceUID | cut -d "[" -f2 | cut -d "]" -f1)"
+    while read -r sopiuid; do
+      #printf "%s SOURCE=%s(%s) SUID=%s SERIUID=%s SOPIUID=%s\n" "$(date)" "$RemotePACS_QR_AET" "$RemotePACS_Primary_IP" "$Study_Instance_UID" "$seriuid" "$sopiuid"
+      printf "%s\n" "$sopiuid" >>"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/remote_sopiuids.txt
+    done <<-EOSOPIUIDS
+      $sopiuids_per_seriesInstanceUID
+EOSOPIUIDS
+  done <<-EOSERIUIDS
+    $series_instance_uids
+EOSERIUIDS
+
+  # Query the local imagemedical.Dcobject table for the SOPInstanceUIDs for the StudyInstanceUID
+  # Exclude SOPCLUIDs for PBR Files ONLY IF the remote system is not eRAD PACS system
+  # 	(0008,0016) UI =PracticeBuilderReport                   #  30, 1 SOPClassUID
+  sql.sh "SELECT SOPIUID FROM imagemedical.Dcobject WHERE STYIUID = '${Study_Instance_UID}'" -N >"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/local_sopiuids.txt
+
+  # Compare the two lists with comm and identify the missing SOPIUIDs
+  comm -23 "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/local_sopiuids.txt "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/remote_sopiuids.txt >"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids.txt
+
+  # Iterate through the missing SOPIUIDs and get the filenames (full paths), for use by storescu
+  while read -r sopiuid; do
+    sql.sh "SELECT concat('$Study_Directory', '/', FNAME) FROM imagemedical.Dcobject WHERE SOPIUID = '${sopiuid}'" -N >>"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids_filenames.txt
+  done <<-EOMISSINGSOPIUIDS
+    $(cat "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids.txt)
+EOMISSINGSOPIUIDS
+
+  # Get the number of missing SOPIUIDs & assign it to a variable
+  missing_sopiuids_count="$(wc -l <"${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids.txt)"
+  printf "%s SOURCE=%s(%s) SUID=%s MISSING=%s\n" "$(date)" "$RemotePACS_QR_AET" "$RemotePACS_Primary_IP" "$Study_Instance_UID" "$missing_sopiuids_count"
+
+  # If the number of missing SOPIUIDs is greater than 0, then execute a storescu for each missing SOPIUID
+  obj_failures=0
+  if [ "$missing_sopiuids_count" -gt 0 ]; then
+    while read -r missing_sopiuid; do
+      # Execute a storescu for the missing SOPIUID
+      /home/medsrv/component/dicom/bin/storescu -R --aetitle "$_LOCAL_AE_TITLE" --call "$RemotePACS_QR_AET" "$RemotePACS_Primary_IP" "$RemotePACS_QR_PORT" "$Study_Directory"/"$missing_sopiuid" >"${_TMP_DIR}"/storescu.tmp.log 2>&1
+      retval=$?
+      if [ "$retval" -ne "0" ] && [ "$retval" -ne "72" ]; then # return value of 72 means there are soft edit changes in the PbR
+        #increment obj failure counter
+        obj_failures=$((obj_failures + 1))
+        printf "%s\n" "/home/medsrv/component/dicom/bin/storescu -R --aetitle $_LOCAL_AE_TITLE --call $RemotePACS_QR_AET $RemotePACS_Primary_IP $RemotePACS_QR_PORT $Study_Directory/$missing_sopiuid" >>"${_LOGS_DIR}"/storescu-failures.log
+      else
+        #increment obj success counter
+        obj_successes=$((obj_successes + 1))
+      fi
+      # printf "Command: %s\n" "/home/medsrv/component/dicom/bin/storescu -R --aetitle $_LOCAL_AE_TITLE --call $RemotePACS_QR_AET $RemotePACS_Primary_IP $RemotePACS_QR_PORT $Study_Directory/$missing_sopiuid"
+    done <<-EOMISSINGSOPIUIDS
+      $(cat "${DRV_Temp_Dir}"/"${Study_Instance_UID}"/missing_sopiuids_filenames.txt)
+EOMISSINGSOPIUIDS
+
+    if [ "$obj_failures" -ne "0" ]; then
+      printf "storescu failed:t/s/f %s/%s/%s\n" "$missing_sopiuids_count" "${obj_successes:-0}" "${obj_failures:-0}" | tee -a "${_LOGS_DIR}"/"${_ERROR_LOG}"
+      # set comment='storescu failed' for the study (styiuid) in the ${_MIGRATION_DATABASE}.studies table
+      sql.sh "UPDATE ${_MIGRATION_DATABASE}.studies SET comment='storescu failed' WHERE styiuid = '${Study_Instance_UID}'"
+    else
+      printf "success:t/s/f %s/%s/%s\n" "$missing_sopiuids_count" "${obj_successes:-0}" "${obj_failures:-0}" | tee -a "${_LOGS_DIR}"/"${_INFO_LOG}"
+      # Set migrated='y' for the study (styiuid) in the ${_MIGRATION_DATABASE}.studies table
+      sql.sh "UPDATE ${_MIGRATION_DATABASE}.studies SET migrated='y', priority = -1 WHERE styiuid = '${Study_Instance_UID}'"
+    fi
+
+  fi
+}

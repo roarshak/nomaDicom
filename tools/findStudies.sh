@@ -129,6 +129,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --QRAE_TITLE)
       QRAE_TITLE="$2"
+      # shellcheck disable=SC2034
       AE_TITLE="$2"
       shift 2
       ;;
@@ -281,6 +282,7 @@ function exe_findNlog () {
   fi
 
   # Execute the command and capture the response
+  # shellcheck disable=SC2086
   findscu_response=$(eval $findscu_command 2>&1)
   findscu_return_code=$?
 

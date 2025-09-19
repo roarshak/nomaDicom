@@ -71,6 +71,7 @@ _Concurrent_Threads=3
               local old_ifs="$IFS"  # Preserve the original IFS
               IFS=$'\n'  # Change IFS to handle new line as field separator
               # Iterate over lines that look like variable assignments
+              # shellcheck disable=SC2013
               for line in $(grep '^[[:alnum:]_]*=.*' "$config_file"); do
                   var_name=$(echo "$line" | cut -d'=' -f1)
                   manage_env --add "$var_name"  # Add to script_vars array for tracking
@@ -511,7 +512,7 @@ _Concurrent_Threads=3
       ' "$info_log" | sort -u | wc -l)
 
       # Output the count
-      [[ -z "$count" ]] || [[ "$count" -eq 0 ]] && echo 0 || echo $count
+      [[ -z "$count" ]] || [[ "$count" -eq 0 ]] && echo 0 || echo "$count"
     }
 
     # _ownerhub=$(ssh 10.240.14.161 "sql.sh \"SELECT OWNERHUB FROM Dcstudy WHERE STYIUID='$suid'\" -N")
@@ -529,6 +530,7 @@ _Concurrent_Threads=3
       fi
       # set -x
       if [[ $sleep_count -ge 3 ]]; then
+        # shellcheck disable=SC2086
         received_count2=$(count_unique_scp_stored $suid)
         if [[ $received_count2 -gt $received_count ]]; then
           received_count=$received_count2

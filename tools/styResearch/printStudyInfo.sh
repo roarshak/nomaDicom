@@ -79,32 +79,38 @@ printStudyInfo_()
 {
 	local study="$1"
 	local studyDirectory=`getStudyDirectory_ $study`
-	local cacheDirectory=`getStudyCacheDirectory_ $study`
-	local processedDirectory=`getStudyProcessedDirectory_ $study`
+        local processedDirectory=`getStudyProcessedDirectory_ $study`
 	local ref
 	local file
 
-	if [ "$printDirectories" = "true" -o "$useDefault" = "true" ] ; then
-		setIndentLevel_ 0
-		printLineIndented_ "Study Directory: $studyDirectory"
-		printLineIndented_ "Cache Directory: $cacheDirectory"
-		printLineIndented_ "Processed Directory: $processedDirectory"
-		if hasArchiveConfigured_ ; then
-			printLineIndented_ "Archive Directory: `getArchiveDirectory_ $study`"
-		fi
-	fi
+        if [ "$printDirectories" = "true" -o "$useDefault" = "true" ] ; then
+                setIndentLevel_ 0
+                printLineIndented_ "Study Directory: $studyDirectory"
+                printLineIndented_ "Processed Directory: $processedDirectory"
+                if hasArchiveConfigured_ ; then
+                        printLineIndented_ "Archive Directory: `getArchiveDirectory_ $study`"
+                fi
+        fi
 
 	if [ "$printStoreState" = "true" -o "$useDefault" = "true" ] ; then
 		setIndentLevel_ 0
 		printLineIndented_ "storestate.rec:"
 
 		setIndentLevel_ "+4"
-		if [ -f "$studyDirectory/.info/storestate.rec" ] ; then
-			printFileIndented_ "$studyDirectory/.info/storestate.rec"
-		else
-			printLineIndented_ "!!! storestate.rec file does not exist !!!"
-		fi
-	fi
+                if [ -f "$studyDirectory/.info/storestate.rec" ] ; then
+                        while IFS= read -r line ; do
+                                case "$line" in
+                                        *Version="1"*) continue ;;
+                                        *StudyOwner=*) continue ;;
+                                        *StagedDevices=*) continue ;;
+                                esac
+
+                                printLineIndented_ "$line"
+                        done < "$studyDirectory/.info/storestate.rec"
+                else
+                        printLineIndented_ "!!! storestate.rec file does not exist !!!"
+                fi
+        fi
 
 	if [ "$printReferences" = "true" ] ; then
 		setIndentLevel_ 0
@@ -161,8 +167,8 @@ printStudyInfo_()
 		echo "Study table entries: $NumStudyEntries; Object table entries: $NumObjectEntries; Report table entries: $NumReportEntries"
 
 		echo "Study Data:"
-		echo "select ACCNO, PNAME, MODALITY, STYDATETIME, STYDESCR, MAINST, REPORTST, FOLDER, Dcstudy_D as DELETED from Dcstudy where STYIUID='$study';" | $MYSQL_HOME/bin/mysql -E $DBNAME 
-	fi
+                echo "select ACCNO, MODALITY, STYDATETIME, MAINST, REPORTST, FOLDER, Dcstudy_D as DELETED from Dcstudy where STYIUID='$study';" | $MYSQL_HOME/bin/mysql -E $DBNAME
+        fi
 }
 
 if isSingleStudy_ ; then

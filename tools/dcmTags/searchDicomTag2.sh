@@ -1,8 +1,30 @@
 #!/bin/sh
 
-# Usage: $0 -s <StudyInstanceUID> -t <DICOMTag> [-f <filename>]
+show_popular_tags() {
+  echo "Popular DICOM Tags:"
+  echo "  (0002,0010) - Transfer Syntax UID (compression info)"
+  echo "  (0008,0016) - SOP Class UID"
+  echo "  (0008,0018) - SOP Instance UID"
+  echo "  (0008,0020) - Study Date"
+  echo "  (0008,0030) - Study Time"
+  echo "  (0008,0050) - Accession Number"
+  echo "  (0008,0060) - Modality"
+  echo "  (0010,0010) - Patient Name"
+  echo "  (0010,0020) - Patient ID"
+  echo "  (0020,000D) - Study Instance UID"
+  echo "  (0020,000E) - Series Instance UID"
+  echo "  (0020,0010) - Study ID"
+}
+
+# Usage: $0 -s <StudyInstanceUID> -t <DICOMTag> [-f <filename>] [-h for help]
 usage() {
-  echo "Usage: $0 -s <StudyInstanceUID> -t <DICOMTag> [-f <filename>]" >&2
+  echo "Usage: $0 -s <StudyInstanceUID> -t <DICOMTag> [-f <filename>] [-h]" >&2
+  echo "Options:" >&2
+  echo "  -s : Study Instance UID" >&2
+  echo "  -t : DICOM Tag to search for" >&2
+  echo "  -f : Optional filename filter" >&2
+  echo "  -h : Show this help message and popular DICOM tags" >&2
+  show_popular_tags
   exit 1
 }
 
@@ -10,20 +32,22 @@ suid=""
 tag=""
 filename_filter=""
 
-while getopts "s:t:f:" opt; do
+while getopts "s:t:f:h" opt; do
   case "$opt" in
     s) suid="$OPTARG" ;;
     t) tag="$OPTARG" ;;
     f) filename_filter="$OPTARG" ;;
+    h) usage ;;
     *) usage ;;
   esac
 done
 
-[ -z "$suid" ] || [ -z "$tag" ] && usage
+# Only check for required parameters if -h was not used
+if [ "$OPTIND" -eq 1 ] || [ -z "$suid" ] || [ -z "$tag" ]; then
+  usage
+fi
 
-tab=$(printf '\t')
-
-# locateStudy.sh must be executable and in this path
+tab=$(printf '\t')# locateStudy.sh must be executable and in this path
 stydir=$(/home/medsrv/component/repositoryhandler/scripts/locateStudy.sh -d "$suid") || {
   echo "Error: locateStudy.sh failed for UID $suid" >&2
   exit 1

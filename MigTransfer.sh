@@ -809,7 +809,8 @@ _Concurrent_Threads=3
           export)
               # ./exportExam.sh --target "${Export_Root_Dir:?}" --study "${SUID:?}"
               # TODO: Does exportExamsh update the transferred_datetime in the database? YES
-              ./exportExam.sh --target "${Export_Root_Dir:?}" --study "${SUID:?}" | tee -a migration.log 2>&1
+              # ./exportExam.sh --target "${Export_Root_Dir:?}" --study "${SUID:?}" | tee -a migration.log 2>&1 
+              ./exportExam.sh --target "${Export_Root_Dir:?}" --study "${SUID:?}" 2>&1 | tee -a migration.log | sed --unbuffered ''
               ;;
           runjavacmd)
               echo "Under construction, exiting."

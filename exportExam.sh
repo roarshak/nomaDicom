@@ -198,48 +198,33 @@ system_tbl="systems"
     fi
   }
   Verify_Exported_Study() {
-    Study_NonPbR_List_Exported=($(getNonPbRList "$Export_Directory" | awk -F'/' '{ print $NF }'))
-    Study_NonPbR_List_StudyDir=($(getNonPbRList "$Study_Directory" | awk -F'/' '{ print $NF }'))
-    # Remove the .dcm extension from the elements in the Study_NonPbR_List_Exported array
-    for (( i=0; i<${#Study_NonPbR_List_Exported[@]}; i++ )); do
-      #shellcheck disable=SC2004
-      Study_NonPbR_List_Exported[$i]="${Study_NonPbR_List_Exported[$i]%.dcm}"
-    done
+    local tmp_exported="/tmp/exported_${SUID}.txt"
+    local tmp_studydir="/tmp/studydir_${SUID}.txt"
+    local missing_file="vfail_missing_objects.log"
 
-    # Initialize the arrays_match variable and the missing_elements array
-      arrays_match=true
-      missing_elements=()
+    # Get file lists and prepare for comparison
+    getNonPbRList "$Export_Directory" | awk -F'/' '{ print $NF }' | sed 's/\.dcm$//' | sort > "$tmp_exported"
+    getNonPbRList "$Study_Directory" | awk -F'/' '{ print $NF }' | sort > "$tmp_studydir"
 
-    # Compare each element in Study_NonPbR_List_StudyDir with all elements in Study_NonPbR_List_Exported
-      for (( i=0; i<${#Study_NonPbR_List_StudyDir[@]}; i++ )); do
-        found=false
-        for (( j=0; j<${#Study_NonPbR_List_Exported[@]}; j++ )); do
-          if [[ "${Study_NonPbR_List_StudyDir[$i]}" == "${Study_NonPbR_List_Exported[$j]}" ]]; then
-            found=true
-            break
-          fi
-        done
-        
-        if ! "$found"; then
-          arrays_match=false
-          missing_elements+=("StyDir ${Study_NonPbR_List_StudyDir[$i]}  ExportDir ${Study_NonPbR_List_Exported[$j]}")
-        fi
-      done
+    # Use comm to find items in Study_Directory but not in Export_Directory (O(n log n) vs O(n²))
+    local missing=$(comm -23 "$tmp_studydir" "$tmp_exported")
 
-    # Log the missing elements to a text file if arrays do not match
-      if ! "$arrays_match"; then
-        if [ "$executedByUser" = "True" ]; then
-          printf "%s %s failed verification.\n" "$(date +"$_DATE_FMT")" "$SUID"
-        elif [ "$executedByUser" = "False" ]; then
-          printf "%s %s failed verification.\n" "$(date +"$_DATE_FMT")" "$SUID" | tee -a "$output_log"
-        fi
-        sql.sh "USE $migration_database; UPDATE $admin_tbl SET verification='failed', skip='y', skip_reason='vfail' WHERE styiuid='$SUID';"
-        missing_file="vfail_missing_objects.log"
-        printf "Missing elements: %s\n" "$SUID" >> "$missing_file"
-        printf "%s\n" "${missing_elements[@]}" >> "$missing_file"
-      else
-        sql.sh "USE $migration_database; UPDATE $admin_tbl SET verification='passed' WHERE styiuid='$SUID';"
+    # Clean up temp files
+    rm -f "$tmp_exported" "$tmp_studydir"
+
+    # Log the missing elements if any found
+    if [[ -n "$missing" ]]; then
+      if [ "$executedByUser" = "True" ]; then
+        printf "%s %s failed verification.\n" "$(date +"$_DATE_FMT")" "$SUID"
+      elif [ "$executedByUser" = "False" ]; then
+        printf "%s %s failed verification.\n" "$(date +"$_DATE_FMT")" "$SUID" | tee -a "$output_log"
       fi
+      sql.sh "USE $migration_database; UPDATE $admin_tbl SET verification='failed', skip='y', skip_reason='vfail' WHERE styiuid='$SUID';"
+      printf "Missing elements: %s\n" "$SUID" >> "$missing_file"
+      printf "%s\n" "$missing" >> "$missing_file"
+    else
+      sql.sh "USE $migration_database; UPDATE $admin_tbl SET verification='passed' WHERE styiuid='$SUID';"
+    fi
   }
   Export_Study_To_Disk() {
     # Exit if SUID is not set

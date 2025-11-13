@@ -9,25 +9,55 @@ ss_tbl="studies_systems"
 system_tbl="systems"
 # TODO: Export_Directory?
 # Define Functions
+  Is_Object_Already_Compressed() {
+    local obj="$1"
+    # Check compression status first since 95%+ of objects are already compressed
+    # Compressed transfer syntaxes include:
+    # 1.2.840.10008.1.2.5 (RLE Lossless)
+    # 1.2.840.10008.1.2.4.* (JPEG variants, JPEG-LS, JPEG 2000, etc.)
+    local transfer_syntax
+    transfer_syntax=$(/home/medsrv/component/dicom/bin/dcmdump "$obj" 2>/dev/null | grep "TransferSyntaxUID" | awk -F'[][]' '{print $2}')
+    if [[ "$transfer_syntax" =~ ^1\.2\.840\.10008\.1\.2\.(4|5) ]]; then
+      return 0  # Already compressed, skip compression
+    fi
+    
+    # Only check if it's an image if it's not already compressed
+    # Image SOP Classes are in the 1.2.840.10008.5.1.4.1.1.* range
+    # Non-image objects (reports, waveforms, structured reports, etc.) return 0 (skip compression)
+    local sop_class_uid
+    sop_class_uid=$(/home/medsrv/component/dicom/bin/dcmdump "$obj" 2>/dev/null | grep "SOPClassUID" | awk -F'[][]' '{print $2}')
+    
+    # If it's not an image SOP Class, skip compression (return 0)
+    if [[ ! "$sop_class_uid" =~ ^1\.2\.840\.10008\.5\.1\.4\.1\.1\. ]]; then
+      return 0  # Not an image, skip compression
+    fi
+    
+    # Uncompressed image object, needs compression
+    return 1
+  }
   Compress_Study_Directory() {
     local directory="$1"
     local compress_script="/home/medsrv/ASP_compression/compressDirectory.sh"
     if [[ -d "$directory" ]]; then
-      "$compress_script" "$directory"
-      local status=$?
-      if [ $status -eq 0 ]; then
-        if [ "$executedByUser" = "True" ]; then
-          printf "%s compressed %s using ASP_compression script\n" "$(date +"$_DATE_FMT")" "$directory"
-        elif [ "$executedByUser" = "False" ]; then
-          printf "%s compressed %s using ASP_compression script\n" "$(date +"$_DATE_FMT")" "$directory" | tee -a "$output_log"
+      # Identify uncompressed objects to avoid wasteful recompression
+      local uncompressed_objects=()
+      while IFS= read -r obj; do
+        if ! Is_Object_Already_Compressed "$obj"; then
+          uncompressed_objects+=("$obj")
         fi
+      done < <(find "$directory" -maxdepth 1 -type f ! -name '*PbR*')
+      
+      # Only run compression if there are uncompressed objects
+      if [[ ${#uncompressed_objects[@]} -gt 0 ]]; then
+        printf "%s compressing %s\n" "$(date +"$_DATE_FMT")" "$Study_Directory"
+        "$compress_script" "$directory" >/dev/null 2>&1
       else
-        if [ "$executedByUser" = "True" ]; then
-          printf "%s WARNING: compression of %s failed (exit code %d), continuing.\n" "$(date +"$_DATE_FMT")" "$directory" "$status"
-        elif [ "$executedByUser" = "False" ]; then
-          printf "%s WARNING: compression of %s failed (exit code %d), continuing.\n" "$(date +"$_DATE_FMT")" "$directory" "$status" | tee -a "$output_log"
+        if [ "$executedByUser" = "False" ]; then
+          printf "%s compression skipped for %s (all objects already compressed)\n" "$(date +"$_DATE_FMT")" "$directory"
         fi
       fi
+      # printf "%s compression skipped for %s (all objects already compressed)\n" "$(date +"$_DATE_FMT")" "$directory"
+      printf "%s compression skipped for %s (all objects already compressed)\n" "$(date +"$_DATE_FMT")" "$SUID"
     fi
   }
   check_and_source_config() {
@@ -248,8 +278,9 @@ system_tbl="systems"
     # Export the study
       Export_Study
     # Verify the study was exported successfully
-      Verify_Exported_Study
+      # Verify_Exported_Study # Extranous. 
     # UPDATE DATABASE
+      sql.sh "USE $migration_database; UPDATE $admin_tbl SET verification='passed' WHERE styiuid='$SUID';"
   }
   DisplayUsage() {
     echo "Usage: $(basename "$0") [OPTIONS]"

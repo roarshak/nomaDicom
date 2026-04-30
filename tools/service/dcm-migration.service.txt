@@ -1,0 +1,26 @@
+[Unit]
+Description=DICOM Migration Service
+#Before=shutdown.target
+#After=mysqld.service
+#After=network-online.target
+#After=network.service
+#After=sshd.service
+#After=medsrv.service
+#Requisite=medsrv.service
+#Requisite=mysqld.service
+#Requisite=network.service
+#Requisite=sshd.service
+#PartOf=medsrv.service
+#Conflicts=shutdown.target
+#StartLimitIntervalSec=0
+#RestartSec=60
+
+[Service]
+Type=simple
+#Restart=on-failure
+#WorkingDirectory=/home/medsrv/work/jbooth/2_next_v4.0/next_major_update
+ExecStart=/home/medsrv/work/jbooth/2_next_v4.0/next_major_update/migrate.sh --quiet -M
+#ExecStop=/etc/rc.d/init.d/medsrv stop
+
+[Install]
+WantedBy=multi-user.target

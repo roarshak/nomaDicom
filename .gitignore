@@ -7,3 +7,4 @@ templates/.default.cfg.j2
 file.tmp
 file.tmp.sh
 backport-resources/
+.archived/
